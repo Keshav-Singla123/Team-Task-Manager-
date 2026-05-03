@@ -375,13 +375,19 @@ function Workspace({ auth, setAuth, activeView, setActiveView }) {
 
       let usersList = userData.users || [];
 
-      // Fallback: if users list is empty, extract from project members
-      if (usersList.length === 0) {
+      // Fallback: if users list is empty or incomplete, also extract from project members
+      if (usersList.length < 3) {
         const memberMap = new Map();
+        // Add existing users first
+        usersList.forEach((user) => {
+          memberMap.set(user._id || user.id, user);
+        });
+        // Add all project members
         projectData.projects.forEach((project) => {
           (project.members || []).forEach((member) => {
-            if (member.user?._id) {
-              memberMap.set(member.user._id, member.user);
+            const userId = member.user?._id || member.user;
+            if (userId && !memberMap.has(userId)) {
+              memberMap.set(userId, member.user || member);
             }
           });
         });
