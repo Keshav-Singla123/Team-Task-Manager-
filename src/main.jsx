@@ -1670,33 +1670,29 @@ function TaskModal({
     priority: "medium",
     dueDate: "",
     project: firstProject?._id || "",
-    assignees: firstProject?.members?.[0]?.user?._id
-      ? [firstProject.members[0].user._id]
-      : [],
+    assignees: [],
   });
-  const selectedProject = projects.find(
-    (project) => project._id === form.project,
-  );
-  const assignable = (selectedProject?.members || [])
-    .map((member) => member.user)
-    .filter(Boolean);
+  const [searchTerm, setSearchTerm] = useState("");
 
-  useEffect(() => {
-    if (selectedProject) {
-      const memberIds = selectedProject.members.map(
-        (member) => member.user?._id || member.user,
-      );
-      if (!form.assignees.every((id) => memberIds.includes(id))) {
-        setForm((current) => ({
-          ...current,
-          assignees: memberIds[0] ? [memberIds[0]] : [],
-        }));
-      }
-    }
-  }, [form.project]);
+  const filteredUsers = (users || []).filter((user) =>
+    user.name.toLowerCase().includes(searchTerm.toLowerCase()),
+  );
+
+  function toggleAssignee(userId) {
+    setForm((current) => ({
+      ...current,
+      assignees: current.assignees.includes(userId)
+        ? current.assignees.filter((id) => id !== userId)
+        : [...current.assignees, userId],
+    }));
+  }
 
   async function submit(event) {
     event.preventDefault();
+    if (form.assignees.length === 0) {
+      alert("Please select at least one assignee");
+      return;
+    }
     await request("/tasks", {
       method: "POST",
       body: JSON.stringify({ ...form, dueDate: form.dueDate || null }),
@@ -1741,25 +1737,6 @@ function TaskModal({
             </select>
           </label>
           <label>
-            Assign to
-            <select
-              value={form.assignees[0] || ""}
-              onChange={(e) =>
-                setForm({
-                  ...form,
-                  assignees: e.target.value ? [e.target.value] : [],
-                })
-              }
-              required
-            >
-              {assignable.map((user) => (
-                <option key={user._id} value={user._id}>
-                  {user.name}
-                </option>
-              ))}
-            </select>
-          </label>
-          <label>
             Priority
             <select
               value={form.priority}
@@ -1781,6 +1758,60 @@ function TaskModal({
             />
           </label>
         </div>
+
+        <label>
+          Assign to (search and select)
+          <input
+            type="text"
+            placeholder="Search members..."
+            value={searchTerm}
+            onChange={(e) => setSearchTerm(e.target.value)}
+            style={{ marginBottom: "12px" }}
+          />
+        </label>
+
+        <div
+          className="member-picker"
+          style={{
+            maxHeight: "200px",
+            overflowY: "auto",
+            border: "1px solid #ddd",
+            borderRadius: "8px",
+            padding: "12px",
+          }}
+        >
+          {filteredUsers.length > 0 ? (
+            filteredUsers.map((user) => (
+              <label
+                key={user._id}
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  gap: "8px",
+                  padding: "8px",
+                  cursor: "pointer",
+                }}
+              >
+                <input
+                  type="checkbox"
+                  checked={form.assignees.includes(user._id)}
+                  onChange={() => toggleAssignee(user._id)}
+                />
+                <Avatar user={user} small />
+                <span>{user.name}</span>
+              </label>
+            ))
+          ) : (
+            <p style={{ padding: "8px", color: "#999" }}>No members found</p>
+          )}
+        </div>
+
+        {form.assignees.length > 0 && (
+          <p style={{ fontSize: "0.875rem", color: "#666" }}>
+            {form.assignees.length} member(s) selected
+          </p>
+        )}
+
         <button className="primary-btn">Create Task</button>
       </form>
     </Modal>
