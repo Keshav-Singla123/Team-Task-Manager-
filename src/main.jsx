@@ -2093,7 +2093,8 @@ function ProjectMembersModal({
 
   const [members, setMembers] = useState(initialMembers);
   const [loading, setLoading] = useState(false);
-
+  const validUsers = (users || []).filter((user) => user._id || user.id);
+  const currentUserId = currentUser?.id || currentUser?._id;
   function toggleMember(userId) {
     if (!userId) return;
     const currentUserId = currentUser?.id || currentUser?._id;
