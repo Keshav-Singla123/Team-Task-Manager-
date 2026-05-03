@@ -4,6 +4,7 @@ import { protect } from "../middleware/auth.js";
 import { Notification } from "../models/Notification.js";
 import { Project } from "../models/Project.js";
 import { Task } from "../models/Task.js";
+import { User } from "../models/User.js";
 import { asyncHandler } from "../utils/asyncHandler.js";
 import { logActivity } from "../utils/activity.js";
 import { canManageProject, canViewProject, getProjectMembership, isObjectId } from "../utils/permissions.js";
@@ -73,6 +74,29 @@ async function updateProjectProgress(projectId) {
   await Project.findByIdAndUpdate(projectId, { progress });
 }
 
+async function resolveActiveAssignees(assignees = []) {
+  const uniqueAssignees = [...new Set(assignees.map(String))];
+  if (!uniqueAssignees.length) return [];
+
+  const activeUsers = await User.find({ _id: { $in: uniqueAssignees }, isActive: true }).select("_id");
+  if (activeUsers.length !== uniqueAssignees.length) {
+    return null;
+  }
+
+  return uniqueAssignees;
+}
+
+async function resolveProjectAssignees(project, assignees = []) {
+  const activeAssignees = await resolveActiveAssignees(assignees);
+  if (!activeAssignees) return { error: "One or more assignees do not exist or are inactive" };
+
+  const memberIds = new Set((project.members || []).map((member) => member.user.toString()));
+  const outsideProject = activeAssignees.filter((id) => !memberIds.has(id));
+  if (outsideProject.length) return { error: "Assignees must be project members" };
+
+  return { assignees: activeAssignees };
+}
+
 router.get(
   "/",
   protect,
@@ -118,10 +142,8 @@ router.post(
     if (!project || !canViewProject(req.user, project)) return fail(res, 404, "Project not found");
     if (!canCreateTask(req.user, project)) return fail(res, 403, "You cannot create tasks in this project");
     const data = taskSchema.parse(req.body);
-    const memberIds = project.members.map((member) => member.user.toString());
-    const assignees = data.assignees.filter((id) => memberIds.includes(id));
-
-    if (data.assignees.length !== assignees.length) return fail(res, 400, "Assignees must be project members");
+    const { assignees, error } = await resolveProjectAssignees(project, data.assignees);
+    if (error) return fail(res, 400, error);
 
     const task = await Task.create({
       ...data,
@@ -163,12 +185,25 @@ router.post(
     if (!project || !canViewProject(req.user, project)) return fail(res, 404, "Project not found");
     if (!canCreateTask(req.user, project)) return fail(res, 403, "You cannot create tasks in this project");
     const data = taskSchema.parse(req.body);
-    const memberIds = project.members.map((member) => member.user.toString());
-    const assignees = data.assignees.filter((id) => memberIds.includes(id));
-    if (data.assignees.length !== assignees.length) return fail(res, 400, "Assignees must be project members");
+    const { assignees, error } = await resolveProjectAssignees(project, data.assignees);
+    if (error) return fail(res, 400, error);
     const task = await Task.create({ ...data, project: project._id, reporter: req.user._id, assignees, watchers: [...new Set([...assignees, req.user._id.toString()])] });
-    await updateProjectProgress(project._id);
-    await logActivity({ user: req.user._id, action: "created task", entity: "task", entityId: task._id, project: project._id });
+    await Promise.all([
+      updateProjectProgress(project._id),
+      logActivity({ user: req.user._id, action: "created task", entity: "task", entityId: task._id, project: project._id }),
+      ...assignees
+        .filter((id) => id !== req.user._id.toString())
+        .map((id) =>
+          Notification.create({
+            recipient: id,
+            actor: req.user._id,
+            type: "task_assigned",
+            message: `You were assigned to ${task.title}`,
+            project: project._id,
+            task: task._id
+          })
+        )
+    ]);
     return created(res, { task: await populateTask(Task.findById(task._id)) });
   })
 );
@@ -211,9 +246,10 @@ router.patch(
 
     // If assignees are being changed, ensure they are project members and only allowed for project managers.
     if (data.assignees) {
-      const memberIds = project.members.map((member) => member.user.toString());
-      if (!data.assignees.every((id) => memberIds.includes(id))) return fail(res, 400, "Assignees must be project members");
       if (!canManage) return fail(res, 403, "Members cannot reassign tasks");
+      const { assignees, error } = await resolveProjectAssignees(project, data.assignees);
+      if (error) return fail(res, 400, error);
+      data.assignees = assignees;
     }
 
     const changes = Object.entries(data).map(([field, newValue]) => ({ field, oldValue: existing[field], newValue }));

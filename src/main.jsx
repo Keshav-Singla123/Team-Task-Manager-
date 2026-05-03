@@ -72,12 +72,34 @@ function isOverdue(task) {
 }
 
 function projectRole(project, currentUser) {
-  const currentUserId = currentUser?.id || currentUser?._id;
+  const currentUserId = entityId(currentUser);
   return (
     project?.members?.find(
-      (member) => (member.user?._id || member.user) === currentUserId,
+      (member) => sameId(member.user, currentUserId),
     )?.role || "member"
   );
+}
+
+function entityId(value) {
+  if (!value) return "";
+  return String(value._id || value.id || value);
+}
+
+function sameId(left, right) {
+  return entityId(left) === entityId(right);
+}
+
+function taskProjectId(task) {
+  return entityId(task?.project);
+}
+
+function taskAssigneeIds(task) {
+  return (task?.assignees || []).map(entityId).filter(Boolean);
+}
+
+function isTaskAssignedTo(task, user) {
+  const userId = entityId(user);
+  return Boolean(userId) && taskAssigneeIds(task).includes(userId);
 }
 
 function App() {
@@ -352,7 +374,7 @@ function Workspace({ auth, setAuth, activeView, setActiveView }) {
     [projects, auth.user],
   );
   const adminProjectIds = useMemo(
-    () => new Set(adminProjects.map((project) => project._id)),
+    () => new Set(adminProjects.map(entityId)),
     [adminProjects],
   );
 
@@ -368,7 +390,7 @@ function Workspace({ auth, setAuth, activeView, setActiveView }) {
         await Promise.all([
           request("/users").catch(() => ({ users: [] })), // Fallback to empty if API fails
           request("/projects"),
-          request("/tasks"),
+          request("/tasks?limit=100"),
           request("/dashboard"),
           request("/notifications"),
         ]);
@@ -385,7 +407,7 @@ function Workspace({ auth, setAuth, activeView, setActiveView }) {
         // Add all project members
         projectData.projects.forEach((project) => {
           (project.members || []).forEach((member) => {
-            const userId = member.user?._id || member.user;
+            const userId = entityId(member.user || member);
             if (userId && !memberMap.has(userId)) {
               memberMap.set(userId, member.user || member);
             }
@@ -418,11 +440,7 @@ function Workspace({ auth, setAuth, activeView, setActiveView }) {
     return tasks.filter((task) => {
       // Filter by "My Tasks" vs "All Tasks"
       if (taskFilter === "my") {
-        const isAssigned = (task.assignees || []).some(
-          (assignee) =>
-            (assignee._id || assignee) === (auth.user.id || auth.user._id),
-        );
-        if (!isAssigned) return false;
+        if (!isTaskAssignedTo(task, auth.user)) return false;
       }
 
       // Filter by search query
@@ -613,6 +631,7 @@ function Workspace({ auth, setAuth, activeView, setActiveView }) {
                 memberProjects={memberProjects}
                 adminProjectIds={adminProjectIds}
                 currentUser={auth.user}
+                onCreateTask={(projectId) => setTaskModal({ projectId })}
                 onRefresh={loadAll}
               />
             )}
@@ -688,6 +707,7 @@ function Dashboard({
   memberProjects,
   adminProjectIds,
   currentUser,
+  onCreateTask,
   onRefresh,
 }) {
   const [detailProject, setDetailProject] = useState(null);
@@ -824,15 +844,14 @@ function Dashboard({
       {detailProject && (
         <ProjectDetailModal
           project={detailProject}
-          tasks={tasks.filter(
-            (task) =>
-              task.project?._id === detailProject._id ||
-              task.project === detailProject._id,
-          )}
+          tasks={tasks.filter((task) => taskProjectId(task) === entityId(detailProject))}
           canManage={projectRole(detailProject, currentUser) === "admin"}
           currentUser={currentUser}
           onClose={() => setDetailProject(null)}
-          onCreateTask={() => setDetailProject(null)}
+          onCreateTask={() => {
+            onCreateTask?.(entityId(detailProject));
+            setDetailProject(null);
+          }}
           onManageMembers={() => setDetailProject(null)}
           onRefresh={onRefresh}
         />
@@ -909,10 +928,9 @@ function Projects({
   }, [adminProjects, memberProjects]);
 
   function tasksForProject(project) {
-    return tasks.filter(
-      (task) =>
-        task.project?._id === project._id || task.project === project._id,
-    );
+    const projectId = entityId(project);
+    if (!projectId) return [];
+    return tasks.filter((task) => taskProjectId(task) === projectId);
   }
 
   async function removeProject(id) {
@@ -924,13 +942,15 @@ function Projects({
   function renderProject(project) {
     const canManage = projectRole(project, currentUser) === "admin";
     const projectTasks = tasksForProject(project);
-    const total = projectTasks.length || project.taskSummary?.total || 0;
-    const done =
-      projectTasks.filter((task) => task.status === "done").length ||
-      project.taskSummary?.done ||
-      0;
-    const open = projectTasks.filter((task) => task.status !== "done").length;
-    const overdue = projectTasks.filter(isOverdue).length;
+    const hasLoadedTasks = projectTasks.length > 0;
+    const total = hasLoadedTasks ? projectTasks.length : project.taskSummary?.total || 0;
+    const done = hasLoadedTasks
+      ? projectTasks.filter((task) => task.status === "done").length
+      : project.taskSummary?.done || 0;
+    const open = hasLoadedTasks
+      ? projectTasks.filter((task) => task.status !== "done").length
+      : Math.max(total - done, 0);
+    const overdue = hasLoadedTasks ? projectTasks.filter(isOverdue).length : 0;
     const progress = total ? Math.round((done / total) * 100) : 0;
 
     return (
@@ -1075,15 +1095,15 @@ function Projects({
         />
       )}
 
-      {detailProjectId && (
+      {detailProjectId && allProjects.find((p) => sameId(p, detailProjectId)) && (
         <ProjectDetailModal
-          project={allProjects.find((p) => p._id === detailProjectId)}
+          project={allProjects.find((p) => sameId(p, detailProjectId))}
           tasks={tasksForProject(
-            allProjects.find((p) => p._id === detailProjectId),
+            allProjects.find((p) => sameId(p, detailProjectId)),
           )}
           canManage={
             projectRole(
-              allProjects.find((p) => p._id === detailProjectId),
+              allProjects.find((p) => sameId(p, detailProjectId)),
               currentUser,
             ) === "admin"
           }
@@ -1091,7 +1111,7 @@ function Projects({
           onClose={() => setDetailProjectId(null)}
           onCreateTask={() => onCreateTask(detailProjectId)}
           onManageMembers={() =>
-            setMemberProject(allProjects.find((p) => p._id === detailProjectId))
+            setMemberProject(allProjects.find((p) => sameId(p, detailProjectId)))
           }
           onRefresh={onRefresh}
         />
@@ -1231,11 +1251,11 @@ function ProjectTaskRows({
   onRefresh = () => {},
 }) {
   function isAssignedToCurrentUser(task) {
-    return (task.assignees || []).some((user) => user._id === currentUser?.id);
+    return isTaskAssignedTo(task, currentUser);
   }
 
   function isProjectAdminTask(task) {
-    return adminProjectIds.has(task.project?._id || task.project);
+    return adminProjectIds.has(taskProjectId(task));
   }
 
   function statusOptions(task) {
@@ -1323,7 +1343,7 @@ function TaskList({
   onRefresh = () => {},
 }) {
   function isAssignedToCurrentUser(task) {
-    return (task.assignees || []).some((user) => user._id === currentUser?.id);
+    return isTaskAssignedTo(task, currentUser);
   }
 
   function statusOptions(task) {
@@ -1336,7 +1356,7 @@ function TaskList({
   }
 
   function isProjectAdminTask(task) {
-    return adminProjectIds.has(task.project?._id || task.project);
+    return adminProjectIds.has(taskProjectId(task));
   }
 
   async function updateStatus(task, status) {
@@ -1438,8 +1458,7 @@ function Team({ users, projects, tasks, currentUser }) {
       {projects.map((project) => {
         const members = project.members || [];
         const projectTasks = tasks.filter(
-          (task) =>
-            task.project?._id === project._id || task.project === project._id,
+          (task) => taskProjectId(task) === entityId(project),
         );
         const recentTasks = [...projectTasks]
           .sort(
@@ -1569,11 +1588,7 @@ function Team({ users, projects, tasks, currentUser }) {
       {detailProject && (
         <TeamDetailModal
           project={detailProject}
-          tasks={tasks.filter(
-            (task) =>
-              task.project?._id === detailProject._id ||
-              task.project === detailProject._id,
-          )}
+          tasks={tasks.filter((task) => taskProjectId(task) === entityId(detailProject))}
           currentUser={currentUser}
           onClose={() => setDetailProject(null)}
         />
@@ -1626,13 +1641,11 @@ function TeamDetailModal({ project, tasks, currentUser, onClose }) {
         <div className="team-member-list">
           {members.map((member) => {
             const memberUser = member.user || member;
-            const memberId = memberUser._id || memberUser;
+            const memberId = entityId(memberUser);
             const memberTasks = tasks.filter((task) =>
-              (task.assignees || []).some(
-                (assignee) => (assignee._id || assignee) === memberId,
-              ),
+              isTaskAssignedTo(task, memberId),
             );
-            const isMe = (currentUser?.id || currentUser?._id) === memberId;
+            const isMe = sameId(currentUser, memberId);
 
             return (
               <div className="team-member-row" key={memberId}>
@@ -1641,7 +1654,7 @@ function TeamDetailModal({ project, tasks, currentUser, onClose }) {
                   <strong>{memberUser.name || "Member"}</strong>
                   <span>
                     {labelize(member.role)}
-                    {isMe ? " · You" : ""}
+                    {isMe ? " - You" : ""}
                   </span>
                 </div>
                 <small>{memberTasks.length} tasks</small>
@@ -1668,7 +1681,7 @@ function TaskModal({
   onSaved,
 }) {
   const firstProject =
-    projects.find((project) => project._id === initialProjectId) || projects[0];
+    projects.find((project) => sameId(project, initialProjectId)) || projects[0];
   const [form, setForm] = useState({
     title: "",
     description: "",
@@ -1679,32 +1692,56 @@ function TaskModal({
     assignees: [],
   });
   const [searchTerm, setSearchTerm] = useState("");
+  const [error, setError] = useState("");
+  const selectedProject = projects.find((project) => sameId(project, form.project));
+  const assignableUsers = (selectedProject?.members || [])
+    .map((member) => member.user)
+    .filter(Boolean);
 
-  const filteredUsers = (users || []).filter((user) =>
-    user.name.toLowerCase().includes(searchTerm.toLowerCase()),
+  const filteredUsers = assignableUsers.filter((user) =>
+    (user.name || "").toLowerCase().includes(searchTerm.toLowerCase()),
   );
+
+  useEffect(() => {
+    const allowedIds = new Set(assignableUsers.map(entityId));
+    setForm((current) => ({
+      ...current,
+      assignees: current.assignees.filter((id) => allowedIds.has(entityId(id))),
+    }));
+  }, [form.project]);
+
+  useEffect(() => {
+    if (!form.project && firstProject) {
+      setForm((current) => ({ ...current, project: entityId(firstProject) }));
+    }
+  }, [firstProject, form.project]);
 
   function toggleAssignee(userId) {
     setForm((current) => ({
       ...current,
-      assignees: current.assignees.includes(userId)
-        ? current.assignees.filter((id) => id !== userId)
-        : [...current.assignees, userId],
+      assignees: current.assignees.some((id) => sameId(id, userId))
+        ? current.assignees.filter((id) => !sameId(id, userId))
+        : [...current.assignees, entityId(userId)],
     }));
   }
 
   async function submit(event) {
     event.preventDefault();
+    setError("");
     if (form.assignees.length === 0) {
-      alert("Please select at least one assignee");
+      setError("Please select at least one assignee");
       return;
     }
-    await request("/tasks", {
-      method: "POST",
-      body: JSON.stringify({ ...form, dueDate: form.dueDate || null }),
-    });
-    onSaved();
-    onClose();
+    try {
+      await request("/tasks", {
+        method: "POST",
+        body: JSON.stringify({ ...form, dueDate: form.dueDate || null }),
+      });
+      onSaved();
+      onClose();
+    } catch (err) {
+      setError(err.message);
+    }
   }
 
   return (
@@ -1732,11 +1769,13 @@ function TaskModal({
             Project
             <select
               value={form.project}
-              onChange={(e) => setForm({ ...form, project: e.target.value })}
+              onChange={(e) =>
+                setForm({ ...form, project: e.target.value, assignees: [] })
+              }
               required
             >
               {projects.map((project) => (
-                <option key={project._id} value={project._id}>
+                <option key={entityId(project)} value={entityId(project)}>
                   {project.name}
                 </option>
               ))}
@@ -1766,10 +1805,10 @@ function TaskModal({
         </div>
 
         <label>
-          Assign to (search and select)
+          Assign project members
           <input
             type="text"
-            placeholder="Search members..."
+            placeholder="Search project members..."
             value={searchTerm}
             onChange={(e) => setSearchTerm(e.target.value)}
             style={{ marginBottom: "12px" }}
@@ -1786,10 +1825,14 @@ function TaskModal({
             padding: "12px",
           }}
         >
-          {filteredUsers.length > 0 ? (
+          {!selectedProject ? (
+            <p style={{ padding: "8px", color: "#999" }}>
+              Select a project first
+            </p>
+          ) : filteredUsers.length > 0 ? (
             filteredUsers.map((user) => (
               <label
-                key={user._id}
+                key={entityId(user)}
                 style={{
                   display: "flex",
                   alignItems: "center",
@@ -1800,15 +1843,17 @@ function TaskModal({
               >
                 <input
                   type="checkbox"
-                  checked={form.assignees.includes(user._id)}
-                  onChange={() => toggleAssignee(user._id)}
+                  checked={form.assignees.some((id) => sameId(id, user))}
+                  onChange={() => toggleAssignee(entityId(user))}
                 />
                 <Avatar user={user} small />
                 <span>{user.name}</span>
               </label>
             ))
           ) : (
-            <p style={{ padding: "8px", color: "#999" }}>No members found</p>
+            <p style={{ padding: "8px", color: "#999" }}>
+              No project members found
+            </p>
           )}
         </div>
 
@@ -1818,36 +1863,70 @@ function TaskModal({
           </p>
         )}
 
-        <button className="primary-btn">Create Task</button>
+        {error && <p className="error-text">{error}</p>}
+        <button
+          className="primary-btn"
+          disabled={!form.project || form.assignees.length === 0}
+          title={
+            form.assignees.length === 0
+              ? "Select at least one assignee"
+              : "Create task"
+          }
+        >
+          Create Task
+        </button>
       </form>
     </Modal>
   );
 }
 
 function ProjectModal({ users, currentUser, onClose, onSaved }) {
+  const currentUserId = entityId(currentUser);
   const [form, setForm] = useState({
     name: "",
     description: "",
     status: "active",
     priority: "medium",
     color: COLORS[0],
-    members: [{ user: currentUser.id, role: "admin" }],
+    members: [{ user: currentUserId, role: "admin" }],
   });
+  const [error, setError] = useState("");
 
   function toggleMember(id) {
     setForm((current) => ({
       ...current,
-      members: current.members.some((member) => member.user === id)
-        ? current.members.filter((member) => member.user !== id)
+      members: current.members.some((member) => sameId(member.user, id))
+        ? current.members.filter((member) => !sameId(member.user, id))
         : [...current.members, { user: id, role: "member" }],
     }));
   }
 
   async function submit(event) {
     event.preventDefault();
-    await request("/projects", { method: "POST", body: JSON.stringify(form) });
-    onSaved();
-    onClose();
+    setError("");
+    try {
+      const memberIds = [
+        currentUserId,
+        ...form.members.map((member) => entityId(member.user)),
+      ].filter(Boolean);
+      const uniqueMemberIds = [...new Set(memberIds)];
+      await request("/projects", {
+        method: "POST",
+        body: JSON.stringify({
+          ...form,
+          startDate: form.startDate || undefined,
+          dueDate: form.dueDate || undefined,
+          members: uniqueMemberIds.map((id) => ({
+            user: id,
+            role: sameId(id, currentUserId) ? "admin" : "member",
+          })),
+        }),
+      });
+      onSaved();
+      onClose();
+    } catch (err) {
+      setError(err.message);
+    }
   }
 
   return (
@@ -1910,20 +1989,21 @@ function ProjectModal({ users, currentUser, onClose, onSaved }) {
         </div>
         <div className="member-picker">
           {users.map((user) => (
-            <label key={user._id}>
+            <label key={entityId(user)}>
               <input
                 type="checkbox"
                 checked={form.members.some(
-                  (member) => member.user === user._id,
+                  (member) => sameId(member.user, user),
                 )}
-                disabled={user._id === currentUser.id}
-                onChange={() => toggleMember(user._id)}
+                disabled={sameId(user, currentUserId)}
+                onChange={() => toggleMember(entityId(user))}
               />
               <Avatar user={user} small />
               {user.name}
             </label>
           ))}
         </div>
+        {error && <p className="error-text">{error}</p>}
         <button className="primary-btn">Create Project</button>
       </form>
     </Modal>
@@ -1942,16 +2022,45 @@ function ProjectDetailModal({
 }) {
   if (!project) return null;
 
-  const currentUserId = currentUser?.id || currentUser?._id;
-  const assignedTasks = tasks.filter((task) =>
-    (task.assignees || []).some(
-      (assignee) => (assignee._id || assignee) === currentUserId,
-    ),
+  const projectId = entityId(project);
+  const [projectTasks, setProjectTasks] = useState(tasks);
+  const [loadingTasks, setLoadingTasks] = useState(false);
+
+  useEffect(() => {
+    let ignore = false;
+    setProjectTasks(tasks);
+    if (!projectId) return () => {
+      ignore = true;
+    };
+
+    setLoadingTasks(true);
+    request(`/projects/${projectId}/tasks`)
+      .then((data) => {
+        if (!ignore) setProjectTasks(data.tasks || []);
+      })
+      .catch(() => {
+        if (!ignore) setProjectTasks(tasks);
+      })
+      .finally(() => {
+        if (!ignore) setLoadingTasks(false);
+      });
+
+    return () => {
+      ignore = true;
+    };
+  }, [projectId, tasks]);
+
+  const assignedTasks = projectTasks.filter((task) =>
+    isTaskAssignedTo(task, currentUser),
   );
-  const visibleTasks = canManage ? tasks : assignedTasks;
+  const visibleTasks = canManage ? projectTasks : assignedTasks;
+  const projectDone = projectTasks.filter((task) => task.status === "done").length;
+  const projectOpen = projectTasks.filter((task) => task.status !== "done").length;
+  const projectOverdue = projectTasks.filter(isOverdue).length;
+  const projectProgress = projectTasks.length
+    ? Math.round((projectDone / projectTasks.length) * 100)
+    : 0;
   const done = visibleTasks.filter((task) => task.status === "done").length;
-  const open = visibleTasks.filter((task) => task.status !== "done").length;
-  const overdue = visibleTasks.filter(isOverdue).length;
   const progress = visibleTasks.length
     ? Math.round((done / visibleTasks.length) * 100)
     : 0;
@@ -1964,11 +2073,11 @@ function ProjectDetailModal({
         </p>
 
         <div className="detail-metrics">
-          <span>{visibleTasks.length} total tasks</span>
-          <span>{open} open</span>
-          <span>{done} done</span>
-          <span>{overdue} overdue</span>
-          <span>{progress}% complete</span>
+          <span>{projectTasks.length} total tasks</span>
+          <span>{projectOpen} open</span>
+          <span>{projectDone} done</span>
+          <span>{projectOverdue} overdue</span>
+          <span>{projectProgress}% complete</span>
           <span>
             {project.dueDate
               ? `Deadline ${format(parseISO(project.dueDate), "MMM d, yyyy")}`
@@ -1996,7 +2105,9 @@ function ProjectDetailModal({
           <div>
             <div className="section-head">
               <h3>{canManage ? "Task Status" : "Your Assigned Tasks"}</h3>
-              <span className="pill">{visibleTasks.length}</span>
+              <span className="pill">
+                {loadingTasks ? "..." : visibleTasks.length}
+              </span>
             </div>
             {canManage ? (
               <div className="status-summary">
@@ -2088,20 +2199,19 @@ function ProjectMembersModal({
   if (!project) return null;
 
   const initialMembers = (project.members || [])
-    .map((member) => member.user?._id || member.user)
+    .map((member) => entityId(member.user || member))
     .filter((id) => id);
 
   const [members, setMembers] = useState(initialMembers);
   const [loading, setLoading] = useState(false);
   const validUsers = (users || []).filter((user) => user._id || user.id);
-  const currentUserId = currentUser?.id || currentUser?._id;
+  const currentUserId = entityId(currentUser);
   function toggleMember(userId) {
     if (!userId) return;
-    const currentUserId = currentUser?.id || currentUser?._id;
-    if (userId === currentUserId) return;
+    if (sameId(userId, currentUserId)) return;
     setMembers((current) =>
-      current.includes(userId)
-        ? current.filter((id) => id !== userId)
+      current.some((id) => sameId(id, userId))
+        ? current.filter((id) => !sameId(id, userId))
         : [...current, userId],
     );
   }
@@ -2110,7 +2220,7 @@ function ProjectMembersModal({
     event.preventDefault();
     setLoading(true);
     try {
-      const validMembers = members.filter((id) => id && typeof id === "string");
+      const validMembers = members.map(entityId).filter(Boolean);
       const initialSet = new Set(initialMembers);
       const currentSet = new Set(validMembers);
       const addedIds = validMembers.filter((id) => !initialSet.has(id));
@@ -2133,7 +2243,9 @@ function ProjectMembersModal({
         ids
           .map(
             (id) =>
-              validUsers.find((user) => (user._id || user.id) === id)?.name,
+              validUsers.find(
+                (user) => sameId(user, id),
+              )?.name,
           )
           .filter(Boolean);
       const addedNames = resolveNames(addedIds);
@@ -2153,8 +2265,7 @@ function ProjectMembersModal({
     }
   }
 
-  const validUsers = (users || []).filter((user) => user._id || user.id);
-  const currentUserId = currentUser?.id || currentUser?._id;
+  // validUsers and currentUserId already defined above
 
   return (
     <Modal title="Add / Remove Members" onClose={onClose}>
@@ -2164,13 +2275,13 @@ function ProjectMembersModal({
         ) : (
           <div className="member-picker">
             {validUsers.map((user) => {
-              const userId = user._id || user.id;
-              const isSelf = userId === currentUserId;
+              const userId = entityId(user);
+              const isSelf = sameId(userId, currentUserId);
               return (
                 <label key={userId} style={{ opacity: isSelf ? 0.6 : 1 }}>
                   <input
                     type="checkbox"
-                    checked={members.includes(userId)}
+                    checked={members.some((id) => sameId(id, userId))}
                     disabled={isSelf}
                     onChange={() => toggleMember(userId)}
                   />
