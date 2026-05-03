@@ -78,11 +78,12 @@ router.post(
     await user.save();
 
     const clientUrl = process.env.CLIENT_URL || "http://localhost:5173";
-    await sendMail({
+    // Send email in background without blocking response
+    sendMail({
       to: user.email,
       subject: "Verify your TaskFlow account",
       html: `<p>Welcome to TaskFlow.</p><p>Verify your account: <a href="${clientUrl}/verify-email?token=${verificationToken}">Verify email</a></p>`
-    });
+    }).catch((err) => console.error("Email send failed:", err.message));
 
     return created(res, {
       message: "Account created. Login with the same email and password to open your workspace."
@@ -171,11 +172,12 @@ router.post(
     const resetToken = user.createToken("passwordResetToken", 60);
     await user.save();
     const clientUrl = process.env.CLIENT_URL || "http://localhost:5173";
-    await sendMail({
+    // Send email in background without blocking response
+    sendMail({
       to: user.email,
       subject: "Reset your TaskFlow password",
       html: `<p>Reset your password within 1 hour: <a href="${clientUrl}/reset-password?token=${resetToken}">Reset password</a></p>`
-    });
+    }).catch((err) => console.error("Email send failed:", err.message));
 
     return ok(res, response);
   })
