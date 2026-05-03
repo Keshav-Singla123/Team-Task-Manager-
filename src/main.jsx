@@ -982,16 +982,7 @@ function Projects({
                 >
                   <Plus size={17} />
                 </button>
-                <button
-                  className="icon-btn"
-                  onClick={(event) => {
-                    event.stopPropagation();
-                    setMemberProject(project);
-                  }}
-                  aria-label="Manage members"
-                >
-                  <Users size={17} />
-                </button>
+                {/* Manage members removed from project card menu per request */}
                 <button
                   className="icon-btn danger"
                   onClick={(event) => {
@@ -1154,10 +1145,7 @@ function ProjectDetail({
               <Plus size={17} />
               Task
             </button>
-            <button className="ghost-btn" onClick={onManageMembers}>
-              <Users size={17} />
-              Members
-            </button>
+            {/* Members button removed per request */}
           </div>
         )}
       </div>
@@ -2041,10 +2029,7 @@ function ProjectDetailModal({
                 <Plus size={17} />
                 Add Task
               </button>
-              <button className="ghost-btn" onClick={onManageMembers}>
-                <Users size={17} />
-                Manage Members
-              </button>
+              {/* "Manage Members" removed per request */}
             </>
           )}
           <button className="link-btn" onClick={onClose}>
